@@ -1,5 +1,7 @@
 fastapi
-uvicorn
+uvicorn[standard]
 twilio
-openai
-websockets
+openai>=1.0.0
+websockets>=10.0
+aiohttp
+python-dotenv
