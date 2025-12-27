@@ -140,7 +140,7 @@ async def call_all():
 
 @app.post("/voice")
 async def voice(request: Request, phone: str = Query(...)):
-    # FIXED: Removed track="both" to prevent Twilio Stream Error 31941
+    # TWILIO XML (TwiML)
     return Response(
         f"""<Response><Connect><Stream url="wss://{PUBLIC_HOST}/media"/></Connect></Response>""",
         media_type="application/xml"
@@ -270,11 +270,12 @@ async def media(ws: WebSocket, phone: str = Query("unknown")):
     name = get_name_by_phone(phone)
 
     # 2. Connect to Deepgram
+    # FIX: Moved Token to URL to avoid 'extra_headers' library crash
     try:
         dg_stt = await websockets.connect(
             f"wss://api.deepgram.com/v2/listen"
-            f"?model={STT_MODEL}&encoding={ENCODING}&sample_rate={SAMPLE_RATE}&interim_results=true",
-            extra_headers={"Authorization": f"Token {DEEPGRAM_API_KEY}"}
+            f"?token={DEEPGRAM_API_KEY}"
+            f"&model={STT_MODEL}&encoding={ENCODING}&sample_rate={SAMPLE_RATE}&interim_results=true"
         )
     except Exception as e:
         logger.error(f"Deepgram Connection Failed: {e}")
@@ -307,7 +308,7 @@ async def media(ws: WebSocket, phone: str = Query("unknown")):
                 await dg_stt.send(base64.b64decode(payload))
 
             elif event == "stop":
-                logger.info("Call ended by signalwire.")
+                logger.info("Call ended by twilio.")
                 break
 
     except Exception as e:
