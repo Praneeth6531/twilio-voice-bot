@@ -40,11 +40,11 @@ DEEPGRAM_API_KEY = os.environ["DEEPGRAM_API_KEY"]
 PUBLIC_HOST = os.environ["PUBLIC_HOST"]
 
 OPENAI_MODEL = "gpt-4o-mini-2024-07-18"
-STT_MODEL = "nova-2-phonecall"
+STT_MODEL = "nova-2"
 TTS_MODEL = "aura-luna-en"
-
-ENCODING = "mulaw"
-SAMPLE_RATE = 8000
+# Removed strict encoding/sample rate to avoid HTTP 400 errors
+ENCODING = "linear16" 
+SAMPLE_RATE = 16000
 
 MAX_CALL_DURATION = 250
 MAX_CONCURRENT_CALLS = 3
@@ -272,6 +272,7 @@ async def media(ws: WebSocket, phone: str = Query("unknown")):
     # 2. Connect to Deepgram
     # FIX: Moved Token to URL to avoid 'extra_headers' library crash
     try:
+                # FIX: Switched to standard model and auto-detect settings to fix HTTP 400
         dg_stt = await websockets.connect(
             f"wss://api.deepgram.com/v2/listen"
             f"?token={DEEPGRAM_API_KEY}"
