@@ -40,11 +40,11 @@ DEEPGRAM_API_KEY = os.environ["DEEPGRAM_API_KEY"]
 PUBLIC_HOST = os.environ["PUBLIC_HOST"]
 
 OPENAI_MODEL = "gpt-4o-mini-2024-07-18"
-STT_MODEL = "nova-2"
+STT_MODEL = "nova-2-phonecall"
 TTS_MODEL = "aura-luna-en"
-# Removed strict encoding/sample rate to avoid HTTP 400 errors
-ENCODING = "linear16" 
-SAMPLE_RATE = 16000
+
+ENCODING = "mulaw"
+SAMPLE_RATE = 8000
 
 MAX_CALL_DURATION = 250
 MAX_CONCURRENT_CALLS = 3
@@ -140,7 +140,7 @@ async def call_all():
 
 @app.post("/voice")
 async def voice(request: Request, phone: str = Query(...)):
-    # TWILIO XML (TwiML)
+    # TWILIO XML (TwiML) - Removed track="both" to avoid config error
     return Response(
         f"""<Response><Connect><Stream url="wss://{PUBLIC_HOST}/media"/></Connect></Response>""",
         media_type="application/xml"
@@ -270,13 +270,12 @@ async def media(ws: WebSocket, phone: str = Query("unknown")):
     name = get_name_by_phone(phone)
 
     # 2. Connect to Deepgram
-    # FIX: Moved Token to URL to avoid 'extra_headers' library crash
+    # Using extra_headers (Requires websockets>=10.0)
     try:
-                # FIX: Switched to standard model and auto-detect settings to fix HTTP 400
         dg_stt = await websockets.connect(
             f"wss://api.deepgram.com/v2/listen"
-            f"?token={DEEPGRAM_API_KEY}"
-            f"&model={STT_MODEL}&encoding={ENCODING}&sample_rate={SAMPLE_RATE}&interim_results=true"
+            f"?model={STT_MODEL}&encoding={ENCODING}&sample_rate={SAMPLE_RATE}&interim_results=true",
+            extra_headers={"Authorization": f"Token {DEEPGRAM_API_KEY}"}
         )
     except Exception as e:
         logger.error(f"Deepgram Connection Failed: {e}")
