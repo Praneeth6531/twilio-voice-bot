@@ -140,9 +140,9 @@ async def call_all():
 
 @app.post("/voice")
 async def voice(request: Request, phone: str = Query(...)):
-    # TWILIO XML (TwiML) - Note: track="both" is crucial for twilio
+    # FIXED: Removed track="both" to prevent Twilio Stream Error 31941
     return Response(
-        f"""<Response><Connect><Stream url="wss://{PUBLIC_HOST}/media" track="both"/></Connect></Response>""",
+        f"""<Response><Connect><Stream url="wss://{PUBLIC_HOST}/media"/></Connect></Response>""",
         media_type="application/xml"
     )
 
