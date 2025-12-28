@@ -22,7 +22,6 @@ from fastapi.responses import Response
 # =========================
 from twilio.rest import Client
 from openai import AsyncOpenAI
-import websockets
 import aiohttp
 
 # =========================
@@ -140,7 +139,7 @@ async def call_all():
 
 @app.post("/voice")
 async def voice(request: Request, phone: str = Query(...)):
-    # TWILIO XML (TwiML) - Removed track="both" to avoid config error
+    # TWILIO XML (TwiML) - Removed track="both" to fix config error
     return Response(
         f"""<Response><Connect><Stream url="wss://{PUBLIC_HOST}/media"/></Connect></Response>""",
         media_type="application/xml"
@@ -208,51 +207,49 @@ async def audio_player(ws: WebSocket, stream_sid: str, response_queue: asyncio.Q
 # =========================
 # TASK 2: STT LISTENER & AI BRAIN (Ears & Brain)
 # =========================
-async def stt_listener(dg_stt, response_queue: asyncio.Queue, state: CallState):
+async def stt_listener(dg_ws, response_queue: asyncio.Queue, state: CallState):
     """
-    Listens to Deepgram.
+    Listens to Deepgram using aiohttp.
     1. Detects if user is speaking to interrupt the AI.
     2. Sends final text to OpenAI when user stops talking.
     3. Puts the AI's reply into the queue.
     """
-    while True:
-        msg = await dg_stt.recv()
-        if isinstance(msg, str):
-            res = json.loads(msg)
-            
-            # Check if Deepgram actually recognized speech
-            if res.get("type") == "Results":
-                alternative = res.get("channel", {}).get("alternatives", [{}])[0]
-                text = alternative.get("transcript", "")
-                is_final = res.get("is_final", False)
+    async for msg in dg_ws:
+        res = json.loads(msg.data)
+        
+        # Check if Deepgram actually recognized speech
+        if res.get("type") == "Results":
+            alternative = res.get("channel", {}).get("alternatives", [{}])[0]
+            text = alternative.get("transcript", "")
+            is_final = res.get("is_final", False)
 
-                # PART 1: INTERRUPTION LOGIC
-                # If we get ANY speech (even interim) and the AI is speaking, cut the AI off.
-                if text and state.is_speaking:
-                    logger.info(f"User speech detected: '{text}'. Interrupting AI.")
-                    state.is_speaking = False
+            # PART 1: INTERRUPTION LOGIC
+            # If we get ANY speech (even interim) and the AI is speaking, cut the AI off.
+            if text and state.is_speaking:
+                logger.info(f"User speech detected: '{text}'. Interrupting AI.")
+                state.is_speaking = False
 
-                # PART 2: BRAIN LOGIC
-                # Only respond to the AI when Deepgram is SURE the sentence is done (is_final)
-                if is_final and text:
-                    state.transcript_log.append(text)
-                    state.conversation.append({"role": "user", "content": text})
+            # PART 2: BRAIN LOGIC
+            # Only respond to the AI when Deepgram is SURE the sentence is done (is_final)
+            if is_final and text:
+                state.transcript_log.append(text)
+                state.conversation.append({"role": "user", "content": text})
+                
+                try:
+                    # Generate AI Response
+                    ai = await openai_client.chat.completions.create(
+                        model=OPENAI_MODEL,
+                        messages=state.conversation,
+                        max_tokens=90  # Shorter responses = faster conversation
+                    )
+                    reply = ai.choices[0].message.content.strip()
                     
-                    try:
-                        # Generate AI Response
-                        ai = await openai_client.chat.completions.create(
-                            model=OPENAI_MODEL,
-                            messages=state.conversation,
-                            max_tokens=90  # Shorter responses = faster conversation
-                        )
-                        reply = ai.choices[0].message.content.strip()
-                        
-                        if reply:
-                            state.conversation.append({"role": "assistant", "content": reply})
-                            # Send to the Audio Player queue
-                            await response_queue.put(reply)
-                    except Exception as e:
-                        logger.error(f"OpenAI Error: {e}")
+                    if reply:
+                        state.conversation.append({"role": "assistant", "content": reply})
+                        # Send to the Audio Player queue
+                        await response_queue.put(reply)
+                except Exception as e:
+                    logger.error(f"OpenAI Error: {e}")
 
 # =========================
 # MAIN MEDIA STREAM (Controller)
@@ -269,63 +266,63 @@ async def media(ws: WebSocket, phone: str = Query("unknown")):
     # Get the caller's name
     name = get_name_by_phone(phone)
 
-    # 2. Connect to Deepgram
-    # Using extra_headers (Requires websockets>=10.0)
+    # 2. Connect to Deepgram using AIOHTTP (Removes websockets library crash)
     try:
-        dg_stt = await websockets.connect(
-            f"wss://api.deepgram.com/v2/listen"
-            f"?model={STT_MODEL}&encoding={ENCODING}&sample_rate={SAMPLE_RATE}&interim_results=true",
-            extra_headers={"Authorization": f"Token {DEEPGRAM_API_KEY}"}
-        )
+        async with aiohttp.ClientSession() as session:
+            async with session.ws_connect(
+                f"wss://api.deepgram.com/v2/listen"
+                f"?model={STT_MODEL}&encoding={ENCODING}&sample_rate={SAMPLE_RATE}&interim_results=true",
+                headers={"Authorization": f"Token {DEEPGRAM_API_KEY}"}
+            ) as dg_ws:
+                logger.info("Deepgram Connected Successfully via aiohttp.")
+                
+                stream_sid = None
+                start_time = time.time()
+
+                # 3. Start Background Tasks
+                # One task handles listening and thinking (Brain)
+                # One task handles speaking (Mouth)
+                player_task = asyncio.create_task(audio_player(ws, stream_sid, response_queue, state))
+                stt_task = asyncio.create_task(stt_listener(dg_ws, response_queue, state))
+
+                try:
+                    while time.time() - start_time < MAX_CALL_DURATION:
+                        data = await ws.receive_json()
+                        event = data.get("event")
+
+                        if event == "start":
+                            stream_sid = data["start"]["streamSid"]
+                            # Kickstart the conversation with a greeting
+                            await response_queue.put(f"Hi {name}, this is Anna. Can you hear me?")
+
+                        elif event == "media":
+                            # Forward raw audio from phone to Deepgram
+                            payload = data["media"]["payload"]
+                            await dg_ws.send_bytes(base64.b64decode(payload))
+
+                        elif event == "stop":
+                            logger.info("Call ended by twilio.")
+                            break
+
+                except Exception as e:
+                    logger.error(f"WebSocket Error: {e}")
+                
+                finally:
+                    # CLEANUP
+                    stt_task.cancel()
+                    player_task.cancel()
+                    call_semaphore.release()
+
+                    # Save Results
+                    full_transcript = " ".join(state.transcript_log)
+                    label = "voicemail" if detect_voicemail(full_transcript) else "completed"
+                    save_result(phone, full_transcript, label)
+                    logger.info(f"Call finished. Saved: {label}")
+
     except Exception as e:
         logger.error(f"Deepgram Connection Failed: {e}")
         await ws.close()
         call_semaphore.release()
-        return
-
-    stream_sid = None
-    start_time = time.time()
-
-    # 3. Start Background Tasks
-    # One task handles listening and thinking (Brain)
-    # One task handles speaking (Mouth)
-    player_task = asyncio.create_task(audio_player(ws, stream_sid, response_queue, state))
-    stt_task = asyncio.create_task(stt_listener(dg_stt, response_queue, state))
-
-    try:
-        while time.time() - start_time < MAX_CALL_DURATION:
-            data = await ws.receive_json()
-            event = data.get("event")
-
-            if event == "start":
-                stream_sid = data["start"]["streamSid"]
-                # Kickstart the conversation with a greeting
-                await response_queue.put(f"Hi {name}, this is Anna. Can you hear me?")
-
-            elif event == "media":
-                # Forward raw audio from phone to Deepgram
-                payload = data["media"]["payload"]
-                await dg_stt.send(base64.b64decode(payload))
-
-            elif event == "stop":
-                logger.info("Call ended by twilio.")
-                break
-
-    except Exception as e:
-        logger.error(f"WebSocket Error: {e}")
-    
-    finally:
-        # CLEANUP
-        stt_task.cancel()
-        player_task.cancel()
-        await dg_stt.close()
-        call_semaphore.release()
-
-        # Save Results
-        full_transcript = " ".join(state.transcript_log)
-        label = "voicemail" if detect_voicemail(full_transcript) else "completed"
-        save_result(phone, full_transcript, label)
-        logger.info(f"Call finished. Saved: {label}")
 
 @app.get("/health")
 async def health():
