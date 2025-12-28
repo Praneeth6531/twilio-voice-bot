@@ -38,8 +38,9 @@ DEEPGRAM_API_KEY = os.environ["DEEPGRAM_API_KEY"]
 
 PUBLIC_HOST = os.environ["PUBLIC_HOST"]
 
+# CHANGED: Switched to generic 'nova-2' to stop 400 errors
 OPENAI_MODEL = "gpt-4o-mini-2024-07-18"
-STT_MODEL = "nova-2-phonecall"
+STT_MODEL = "nova-2" 
 TTS_MODEL = "aura-luna-en"
 
 ENCODING = "mulaw"
@@ -139,7 +140,7 @@ async def call_all():
 
 @app.post("/voice")
 async def voice(request: Request, phone: str = Query(...)):
-    # TWILIO XML (TwiML) - Removed track="both" to fix config error
+    # TWILIO XML (TwiML)
     return Response(
         f"""<Response><Connect><Stream url="wss://{PUBLIC_HOST}/media"/></Connect></Response>""",
         media_type="application/xml"
@@ -240,7 +241,7 @@ async def stt_listener(dg_ws, response_queue: asyncio.Queue, state: CallState):
                     ai = await openai_client.chat.completions.create(
                         model=OPENAI_MODEL,
                         messages=state.conversation,
-                        max_tokens=90  # Shorter responses = faster conversation
+                        max_tokens=90
                     )
                     reply = ai.choices[0].message.content.strip()
                     
@@ -266,15 +267,15 @@ async def media(ws: WebSocket, phone: str = Query("unknown")):
     # Get the caller's name
     name = get_name_by_phone(phone)
 
-    # 2. Connect to Deepgram using AIOHTTP (Removes websockets library crash)
+    # 2. Connect to Deepgram
+    # FIX: Simplified URL to avoid HTTP 400 Bad Request error
     try:
         async with aiohttp.ClientSession() as session:
             async with session.ws_connect(
-                f"wss://api.deepgram.com/v2/listen"
-                f"?model={STT_MODEL}&encoding={ENCODING}&sample_rate={SAMPLE_RATE}&interim_results=true",
+                f"wss://api.deepgram.com/v2/listen?token={DEEPGRAM_API_KEY}&model={STT_MODEL}&interim_results=true",
                 headers={"Authorization": f"Token {DEEPGRAM_API_KEY}"}
             ) as dg_ws:
-                logger.info("Deepgram Connected Successfully via aiohttp.")
+                logger.info("Deepgram Connected Successfully.")
                 
                 stream_sid = None
                 start_time = time.time()
