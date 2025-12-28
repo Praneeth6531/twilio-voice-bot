@@ -255,6 +255,9 @@ async def stt_listener(dg_ws, response_queue: asyncio.Queue, state: CallState):
 # =========================
 # MAIN MEDIA STREAM (Controller)
 # =========================
+# =========================
+# MAIN MEDIA STREAM (Controller)
+# =========================
 @app.websocket("/media")
 async def media(ws: WebSocket, phone: str = Query("unknown")):
     await ws.accept()
@@ -267,15 +270,14 @@ async def media(ws: WebSocket, phone: str = Query("unknown")):
     # Get the caller's name
     name = get_name_by_phone(phone)
 
-    # 2. Connect to Deepgram
-    # FIX: Simplified URL to avoid HTTP 400 Bad Request error
+    # 2. Connect to Deepgram (FIXED TYPO & SIMPLIFIED)
+    # FIX: Changed 'interim' to 'interim' and removed messy params to avoid 400 errors
+    dg_url = f"wss://api.deepgram.com/v2/listen?token={DEEPGRAM_API_KEY}&model=nova-2"
+    
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.ws_connect(
-                f"wss://api.deepgram.com/v2/listen?token={DEEPGRAM_API_KEY}&model={STT_MODEL}&interim_results=true",
-                headers={"Authorization": f"Token {DEEPGRAM_API_KEY}"}
-            ) as dg_ws:
-                logger.info("Deepgram Connected Successfully.")
+            async with session.ws_connect(dg_url) as dg_ws:
+                logger.info("Deepgram Connected Successfully via aiohttp.")
                 
                 stream_sid = None
                 start_time = time.time()
@@ -319,6 +321,11 @@ async def media(ws: WebSocket, phone: str = Query("unknown")):
                     label = "voicemail" if detect_voicemail(full_transcript) else "completed"
                     save_result(phone, full_transcript, label)
                     logger.info(f"Call finished. Saved: {label}")
+
+    except Exception as e:
+        logger.error(f"Deepgram Connection Failed: {e}")
+        await ws.close()
+        call_semaphore.release()
 
     except Exception as e:
         logger.error(f"Deepgram Connection Failed: {e}")
